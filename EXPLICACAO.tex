@@ -1,0 +1,378 @@
+\documentclass[
+  12pt,
+  a4paper,
+  oneside,
+  brazil
+]{abntex2}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{babel}
+\usepackage{amsmath, amssymb}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{indentfirst}
+\usepackage{microtype}
+
+% ---- configuracao de codigo-fonte ----
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue}\bfseries,
+  commentstyle=\color{gray}\itshape,
+  stringstyle=\color{teal},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  frame=single,
+  breaklines=true,
+  showstringspaces=false,
+  tabsize=4,
+  inputencoding=utf8,
+  extendedchars=true,
+  literate=
+    {á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1
+    {â}{{\^a}}1 {ê}{{\^e}}1 {ô}{{\^o}}1
+    {ã}{{\~a}}1 {õ}{{\~o}}1
+    {ç}{{\c{c}}}1 {Ç}{{\c{C}}}1
+}
+
+% ---- capa ----
+\titulo{Fluxo de Potência e Método de Broyden\\Explicação do Código}
+\autor{Davi Alexandre Volcan}
+\instituicao{Universidade Católica de Pelotas -- UCPel}
+\tipotrabalho{Projeto Integrador VII-B}
+\local{Pelotas}
+\data{2026}
+
+\begin{document}
+
+\imprimircapa
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\chapter{O que é Fluxo de Potência?}
+% =====================================================================
+
+Dado um sistema elétrico com geradores e cargas, o \textbf{fluxo de potência}
+responde à pergunta:
+
+\begin{quote}
+  \textit{``Qual é a tensão em cada barra e quanto de potência flui por cada linha?''}
+\end{quote}
+
+Conhece-se o que cada barra \emph{consome ou gera} (potências $P$ e $Q$
+especificadas), mas não se sabe qual será a tensão resultante em cada nó.
+O fluxo de potência encontra essas tensões resolvendo um sistema de
+equações não-lineares.
+
+% =====================================================================
+\chapter{Tipos de Barra}
+% =====================================================================
+
+Cada barra do sistema pertence a um de três tipos, dependendo do que é
+conhecido e do que é incógnita:
+
+\begin{table}[h]
+  \centering
+  \caption{Classificação dos tipos de barra}
+  \begin{tabular}{llll}
+    \toprule
+    \textbf{Tipo} & \textbf{Conhecido} & \textbf{Incógnita} & \textbf{Exemplo} \\
+    \midrule
+    Slack & $|V|$, $\theta$ & $P$, $Q$ & Referência do sistema \\
+    PQ    & $P$, $Q$        & $|V|$, $\theta$ & Barra de carga pura \\
+    PV    & $P$, $|V|$      & $\theta$, $Q$   & Barra com gerador \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+No Exemplo~6.8 (Glover \& Sarma):
+
+\begin{itemize}
+  \item \textbf{Barra~1} (Slack): $V_1 = 1{,}05$~pu, $\theta_1 = 0$ (fixos);
+  \item \textbf{Barra~2} (PQ): consome 400~MW e 250~Mvar ($P_2$ e $Q_2$ conhecidos);
+  \item \textbf{Barra~3} (PV): gera 200~MW com $|V_3| = 1{,}04$~pu fixo.
+\end{itemize}
+
+% =====================================================================
+\chapter{A Matriz $Y_{\text{bus}}$}
+% =====================================================================
+
+A \textbf{matriz de admitâncias nodais} $Y_{\text{bus}}$ descreve como as
+barras estão conectadas eletricamente. Cada elemento é calculado a partir
+das impedâncias das linhas:
+
+\begin{equation}
+  y_{ij} = \frac{1}{Z_{ij}}
+  \qquad \text{(admitância da linha entre as barras } i \text{ e } j\text{)}
+\end{equation}
+
+\begin{align}
+  Y_{ii} &= \sum_{k \neq i} y_{ik}
+    \qquad \text{(diagonal: soma das admitâncias ligadas à barra } i\text{)}\\
+  Y_{ij} &= -y_{ij}
+    \qquad \text{(fora da diagonal: negativo da admitância da linha } i\text{-}j\text{)}
+\end{align}
+
+No código:
+
+\begin{lstlisting}
+y12 = 1.0 / (0.02 + 1j*0.04)   # admitancia da linha 1-2
+y13 = 1.0 / (0.01 + 1j*0.03)
+y23 = 1.0 / (0.0125 + 1j*0.025)
+
+Ybus[0,0] = y12 + y13   # barra 1 conectada a 2 e 3
+Ybus[1,1] = y12 + y23   # barra 2 conectada a 1 e 3
+Ybus[2,2] = y13 + y23   # barra 3 conectada a 1 e 2
+
+Ybus[0,1] = Ybus[1,0] = -y12   # fora da diagonal: negativo
+\end{lstlisting}
+
+Separando parte real e imaginária: $G = \text{Re}(Y_{\text{bus}})$,
+$B = \text{Im}(Y_{\text{bus}})$.
+
+% =====================================================================
+\chapter{Equações de Balanço de Potência}
+% =====================================================================
+
+A potência \textbf{calculada} injetada na barra $i$ é dada por:
+
+\begin{align}
+  P_i &= \sum_{j} |V_i||V_j|\bigl(G_{ij}\cos(\theta_i - \theta_j)
+         + B_{ij}\sin(\theta_i - \theta_j)\bigr) \\
+  Q_i &= \sum_{j} |V_i||V_j|\bigl(G_{ij}\sin(\theta_i - \theta_j)
+         - B_{ij}\cos(\theta_i - \theta_j)\bigr)
+\end{align}
+
+O \textbf{resíduo} (ou \emph{mismatch}) é a diferença entre o que foi
+especificado e o que foi calculado com o estado atual:
+
+\begin{equation}
+  \Delta P_i = P_i^{\text{esp}} - P_i^{\text{calc}}(V,\theta)
+  \qquad
+  \Delta Q_i = Q_i^{\text{esp}} - Q_i^{\text{calc}}(V,\theta)
+\end{equation}
+
+O problema está resolvido quando todos os resíduos forem nulos (ou menores
+que uma tolerância \texttt{tol}).
+
+No código, a função \texttt{mismatch(x)} recebe o vetor de estado atual e
+devolve esse vetor de resíduos:
+
+\begin{lstlisting}
+def mismatch(x):
+    th2, V2, th3 = x          # estado atual: incognitas
+    V  = [V1, V2, V3_mag]     # magnitudes de tensao
+    th = [0.0, th2, th3]      # angulos
+
+    P2 = sum(V[1]*V[j]*(G[1,j]*cos(th[1]-th[j])
+                       + B[1,j]*sin(th[1]-th[j])) for j in range(3))
+    Q2 = sum(...)
+    P3 = sum(...)              # so P3, pois |V3| e fixo
+
+    return [P2_esp - P2,   # DP2
+            Q2_esp - Q2,   # DQ2
+            P3_esp - P3]   # DP3
+\end{lstlisting}
+
+\section{Por que 3 equações e não 4?}
+
+\begin{itemize}
+  \item \textbf{Barra~2} (PQ): 2 incógnitas ($\theta_2$, $V_2$)
+        $\rightarrow$ 2 equações ($\Delta P_2$, $\Delta Q_2$);
+  \item \textbf{Barra~3} (PV): 1 incógnita ($\theta_3$, pois $|V_3|$ é fixo)
+        $\rightarrow$ 1 equação ($\Delta P_3$ apenas);
+  \item \textbf{Barra~1} (Slack): 0 incógnitas $\rightarrow$ 0 equações.
+\end{itemize}
+
+Total: \textbf{3 equações, 3 incógnitas} $\Rightarrow$
+vetor de estado $\mathbf{x} = [\theta_2,\; V_2,\; \theta_3]^\top$.
+
+% =====================================================================
+\chapter{O Método da Secante (revisão — caso 2 barras)}
+% =====================================================================
+
+Para uma equação escalar $f(x) = 0$, o \textbf{método da secante}
+aproxima a derivada usando dois pontos anteriores, em vez de calculá-la
+analiticamente:
+
+\begin{equation}
+  f'(x) \approx \frac{f(x_1) - f(x_0)}{x_1 - x_0}
+  \qquad \Rightarrow \qquad
+  x_2 = x_1 - f(x_1)\,\frac{x_1 - x_0}{f(x_1) - f(x_0)}
+\end{equation}
+
+\textbf{Vantagem:} não precisa calcular a derivada — avalia $f$ apenas em
+dois pontos anteriores.
+
+\textbf{Desvantagem:} converge um pouco mais lento que Newton-Raphson
+(ordem $\approx 1{,}618$ vs.\ ordem~2).
+
+No caso de 2 barras, a eliminação do ângulo $\theta_2$ reduz o problema a
+uma única equação biquadrática em $|V_2|$, tornando o método da secante
+diretamente aplicável.
+
+% =====================================================================
+\chapter{O Método de Broyden (secante multivariável)}
+% =====================================================================
+
+Para um \textbf{sistema} de equações $\mathbf{F}(\mathbf{x}) = \mathbf{0}$,
+o Newton-Raphson exige a \textbf{matriz Jacobiana} $J$ (todas as derivadas
+parciais), o que pode ser custoso de recalcular a cada iteração:
+
+\begin{equation}
+  \text{Newton-Raphson:} \quad
+  \Delta\mathbf{x} = -J^{-1}\,\mathbf{F}(\mathbf{x})
+  \qquad J \text{ recalculado do zero a cada iteração}
+\end{equation}
+
+O \textbf{método de Broyden} aplica a ideia da secante ao Jacobiano: em
+vez de recalculá-lo, \textbf{atualiza} a aproximação com as informações
+da última iteração.
+
+\section{A atualização rank-1 de Broyden}
+
+Após calcular o passo $\Delta\mathbf{x}$ e observar a variação
+$\Delta\mathbf{F} = \mathbf{F}(\mathbf{x}_{\text{novo}}) - \mathbf{F}(\mathbf{x})$,
+o Jacobiano é corrigido por:
+
+\begin{equation}
+  \boxed{
+    J \leftarrow J +
+    \frac{(\Delta\mathbf{F} - J\,\Delta\mathbf{x})\,\Delta\mathbf{x}^\top}
+         {\Delta\mathbf{x}^\top\,\Delta\mathbf{x}}
+  }
+\end{equation}
+
+\textbf{Intuição:} a fração $(\Delta\mathbf{F} - J\,\Delta\mathbf{x})$
+mede o quanto o Jacobiano atual ``errou'' ao prever a variação em
+$\mathbf{F}$. A correção ajusta $J$ na direção de $\Delta\mathbf{x}$
+para que ele acerte melhor na próxima iteração.
+
+\section{Comparação de custo computacional}
+
+\begin{table}[h]
+  \centering
+  \caption{Comparação entre Broyden e Newton-Raphson}
+  \begin{tabular}{lcc}
+    \toprule
+    \textbf{Método} & \textbf{Custo por iteração} & \textbf{Iterações típicas} \\
+    \midrule
+    Newton-Raphson & $\mathcal{O}(n^3)$ — recalcula $J$ inteiro & 4--5 \\
+    Broyden        & $\mathcal{O}(n^2)$ — atualização rank-1    & 6--10 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Para sistemas pequenos ($n = 3$ ou $4$), a diferença de custo é
+desprezível. O Broyden é mais vantajoso quando o cálculo analítico de $J$
+é difícil ou quando $n$ é grande.
+
+% =====================================================================
+\chapter{Fluxo do Algoritmo no Código}
+% =====================================================================
+
+\begin{enumerate}
+  \item Montar $Y_{\text{bus}}$ a partir das impedâncias das linhas.
+  \item Definir $P^{\text{esp}}$ e $Q^{\text{esp}}$ para cada barra.
+  \item Partir de $\mathbf{x}_0 = [0,\;1,\;0]^\top$
+        (partida plana: ângulos $= 0$, tensões $= 1$~pu).
+  \item Calcular o Jacobiano inicial numericamente (\texttt{jac\_num}).
+  \item \textbf{Loop de Broyden:}
+    \begin{enumerate}
+      \item Resolver $J\,\Delta\mathbf{x} = -\mathbf{F}(\mathbf{x})$;
+      \item $\mathbf{x}_{\text{novo}} = \mathbf{x} + \Delta\mathbf{x}$;
+      \item Calcular $e = \|\Delta\mathbf{x}\|$;
+      \item Se $e < \texttt{tol}$ $\Rightarrow$ convergiu, parar;
+      \item $\Delta\mathbf{F} = \mathbf{F}(\mathbf{x}_{\text{novo}}) - \mathbf{F}(\mathbf{x})$;
+      \item Atualizar $J$ pela fórmula rank-1;
+      \item $\mathbf{x} \leftarrow \mathbf{x}_{\text{novo}}$.
+    \end{enumerate}
+  \item Pós-processamento: calcular $P$, $Q$ nas barras slack e PV,
+        fluxos nas linhas e perdas.
+\end{enumerate}
+
+\section{Jacobiano numérico}
+
+Como as equações de balanço são trabalhosas de derivar analiticamente, o
+código usa diferenças finitas para aproximar cada coluna de $J$:
+
+\begin{lstlisting}
+def jac_num(x, h=1e-7):
+    F0 = mismatch(x)
+    for j in range(n):
+        xp = x.copy()
+        xp[j] += h                            # perturba a j-esima variavel
+        J[:,j] = (mismatch(xp) - F0) / h     # derivada parcial aproximada
+\end{lstlisting}
+
+% =====================================================================
+\chapter{Pós-processamento: Fluxos e Perdas nas Linhas}
+% =====================================================================
+
+Após encontrar $V$ e $\theta$ em todas as barras, os fluxos de potência
+nas linhas são calculados com:
+
+\begin{align}
+  I_{ij} &= (V_i - V_j)\,y_{ij}
+    \qquad \text{(corrente da linha } i \to j\text{)} \\
+  S_{ij} &= V_i\,\overline{I_{ij}}
+    \qquad \text{(potência saindo de }i\text{)} \\
+  S_{ji} &= V_j\,\overline{(-I_{ij})}
+    \qquad \text{(potência chegando em }j\text{)} \\
+  S_{\text{perda}} &= S_{ij} + S_{ji}
+    \qquad \Rightarrow \qquad
+    P_{\text{perda}} = R\,|I_{ij}|^2
+\end{align}
+
+A perda existe porque $|S_{ij}| \neq |S_{ji}|$: parte da potência é
+dissipada na resistência da linha.
+
+% =====================================================================
+\chapter{Resultados do Exemplo 6.8}
+% =====================================================================
+
+\begin{table}[h]
+  \centering
+  \caption{Tensões nas barras — comparação Broyden vs.\ gabarito do livro}
+  \begin{tabular}{lccc}
+    \toprule
+    \textbf{Grandeza} & \textbf{Gabarito (Gauss-Seidel)} & \textbf{Broyden} & \textbf{Diferença} \\
+    \midrule
+    $V_2$ (pu)    & 0,97168         & 0,97168         & 0         \\
+    $\theta_2$    & $-2{,}6948°$    & $-2{,}6965°$    & $0{,}002°$ \\
+    $\theta_3$    & $-0{,}498°$     & $-0{,}4988°$    & $0{,}001°$ \\
+    $Q_3$ (Mvar)  & 146,17          & 146,18          & 0,01      \\
+    $P_1$ (MW)    & 218,42          & 218,42          & 0         \\
+    $Q_1$ (Mvar)  & 140,85          & 140,85          & 0         \\
+    \midrule
+    Iterações     & $\sim$10--20    & 6               & ---       \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+A pequena diferença em $\theta_2$ ($0{,}002°$) ocorre porque o gabarito
+usa Gauss-Seidel, que para com precisão menor. O Broyden converge até
+$\|\Delta\mathbf{x}\| < 10^{-10}$ em apenas \textbf{6 iterações}.
+
+\begin{table}[h]
+  \centering
+  \caption{Fluxos nas linhas (MW e Mvar)}
+  \begin{tabular}{lcccc}
+    \toprule
+    \textbf{Linha} & $S_{ij}$ & $S_{ji}$ & \textbf{Perdas (MW)} \\
+    \midrule
+    1-2 & $179{,}36 + j118{,}73$ & $-170{,}97 - j101{,}95$ & 8,39  \\
+    1-3 & $39{,}06  + j22{,}12$  & $-38{,}88  - j21{,}57$  & 0,18  \\
+    2-3 & $-229{,}03 - j148{,}05$& $238{,}88  + j167{,}75$ & 9,85  \\
+    \midrule
+    \multicolumn{3}{r}{\textbf{Total}} & \textbf{18,42} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\end{document}
